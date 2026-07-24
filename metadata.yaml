@@ -2,4 +2,4 @@ name: astrbot_plugin_dustloop_gbvsr
 desc: "查询 Dustloop Wiki 上 Granblue Fantasy Versus Rising (GBVSR) 角色的帧数表与招式判定框(攻击框/受击框)图片，支持指令与 LLM 函数调用"
 version: "v1.2.3"
 author: Kimi
-repo: "https://www.dustloop.com/w/GBVSR"
+repo: "https://github.com/viahhhh/astrbot_plugin_dustloop_gbvsr"
