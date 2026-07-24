@@ -112,6 +112,30 @@ def _alias_hint() -> str:
                      for chara, names in grouped.items())
 
 
+# 防御方式英译中：Mid=上段（站防）、High=中段·越顶、Low=下段
+GUARD_ZH = {
+    "unblockable": "不可防御",
+    "airthrow": "空投",
+    "guard crush": "破防",
+    "throw": "投",
+    "grab": "投",
+    "high": "中段（越顶）",
+    "mid": "上段",
+    "low": "下段",
+    "all": "全段",
+    "air": "空",
+}
+# 按长度降序匹配，保证 airthrow/guard crush 先于 throw/air 命中
+_GUARD_RE = re.compile("|".join(GUARD_ZH), re.I)
+
+
+def _guard_zh(s: str) -> str:
+    """guard 字段逐词翻译成中文术语（如 Mid [All] -> 上段 [全段]），其余内容保留原文。"""
+    if not s:
+        return ""
+    return _GUARD_RE.sub(lambda m: GUARD_ZH[m.group(0).lower()], s)
+
+
 def _fix_buttons(s: str) -> str:
     """常见拳脚输入写法归一化：
     - l/m/h/u 统一大写：5l -> 5L、236h -> 236H
@@ -464,6 +488,8 @@ class DustloopGBVSR(Star):
 
         重要：你的回复最终显示在 QQ 聊天窗口中，QQ 不支持 Markdown 渲染，任何 Markdown 符号都会以原文显示。整理回复时必须使用纯文本：不要用 ** 加粗、# 标题、- 或 * 列表、``` 代码块、` 反引号、| 表格。需要分条时直接换行并用序号（1. 2. 3.）或中文顿号分隔，保证条目清晰即可。
 
+        术语说明：防御方式中的"上段"站防蹲防都可以，"中段（越顶）"必须站防（蹲防会被破防），"下段"必须蹲防。
+
         Args:
             character(string): 角色名。直接原样传入用户说的名字（包括中文俗称/别称），不要自行翻译成英文名或根据印象猜测——插件内置完整的别名表，俗称会由插件负责解析。支持英文名（如 Gran、Narmaya）或中文名/俗称（如 格兰、姬塔、奶刀、龙妈、炎帝）
             move(string): 招式的指令输入或英文名，如 5L、2H、c.M、j.H、236L、623H、236236U、Catastrophe；大小写不敏感。当用户想列出该角色的全部招式时传空字符串 ""。
@@ -591,7 +617,7 @@ class DustloopGBVSR(Star):
         lines = [f"【{chara}】{name}（{inp}）" if inp else f"【{chara}】{name}"]
         fields = [
             ("伤害", r.get("damage", "")),
-            ("防御", r.get("guard", "")),
+            ("防御", _guard_zh(r.get("guard", ""))),
             ("发生", r.get("startup", "")),
             ("持续", r.get("active", "")),
             ("硬直", r.get("recovery", "")),
