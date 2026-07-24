@@ -101,6 +101,17 @@ CHAR_ALIASES = {
 }
 
 
+def _alias_hint() -> str:
+    """把别名表按角色分组，生成注入 LLM 工具描述的提示文本。"""
+    grouped: dict[str, list[str]] = {}
+    for alias, chara in CHAR_ALIASES.items():
+        if alias == chara.lower():
+            continue  # 跳过与原名仅大小写不同的拼写
+        grouped.setdefault(chara, []).append(alias)
+    return "；".join(f"{chara}（{'、'.join(names)}）"
+                     for chara, names in grouped.items())
+
+
 def _fix_buttons(s: str) -> str:
     """常见拳脚输入写法归一化：
     - l/m/h/u 统一大写：5l -> 5L、236h -> 236H
@@ -311,7 +322,7 @@ class DustloopClient:
         return await asyncio.to_thread(_process)
 
 
-@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.3")
+@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.4")
 class DustloopGBVSR(Star):
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
@@ -454,7 +465,7 @@ class DustloopGBVSR(Star):
         重要：你的回复最终显示在 QQ 聊天窗口中，QQ 不支持 Markdown 渲染，任何 Markdown 符号都会以原文显示。整理回复时必须使用纯文本：不要用 ** 加粗、# 标题、- 或 * 列表、``` 代码块、` 反引号、| 表格。需要分条时直接换行并用序号（1. 2. 3.）或中文顿号分隔，保证条目清晰即可。
 
         Args:
-            character(string): 角色名，支持英文名（如 Gran、Narmaya）或中文名/俗称（如 格兰、姬塔、奶刀、豆丁、飞哥、巴布）
+            character(string): 角色名。直接原样传入用户说的名字（包括中文俗称/别称），不要自行翻译成英文名或根据印象猜测——插件内置完整的别名表，俗称会由插件负责解析。支持英文名（如 Gran、Narmaya）或中文名/俗称（如 格兰、姬塔、奶刀、龙妈、炎帝）
             move(string): 招式的指令输入或英文名，如 5L、2H、c.M、j.H、236L、623H、236236U、Catastrophe；大小写不敏感。当用户想列出该角色的全部招式时传空字符串 ""。
         """
         try:
@@ -623,3 +634,11 @@ class DustloopGBVSR(Star):
             parts.append("— 其他 —\n" + "、".join(others))
         parts.append("查询例：/dustloop {0} 5L".format(chara))
         return "\n".join(parts)
+
+
+# 把完整别名表注入 LLM 工具描述（docstring 即工具的 description），
+# 模型看到后才知道俗称该原样传入，而不是凭印象猜成别的角色
+DustloopGBVSR.tool_query_gbvsr.__doc__ += (
+    "\n\n        支持的角色名与俗称对照（括号内为可用别称，原样传入即可）："
+    + _alias_hint()
+)
