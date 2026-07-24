@@ -4,5 +4,11 @@
     "type": "bool",
     "default": true,
     "hint": "开启：下载图片后压缩为最长边 480px 的 JPEG（手机 QQ 对大分辨率透明 PNG 支持差，压缩后加载更稳）；关闭：直接发送 wiki 原图直链，不经过本地下载压缩"
+  },
+  "strip_markdown": {
+    "description": "发送前清除 Markdown 格式",
+    "type": "bool",
+    "default": true,
+    "hint": "开启：大模型回复里的 Markdown 语法（**加粗**、# 标题、- 列表、表格等）在发到 QQ 前转成纯文本，避免符号原样显示；关闭：原样发送模型输出"
   }
 }

@@ -28,7 +28,7 @@ from PIL import Image as PILImage
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
-from astrbot.api.message_components import Image
+from astrbot.api.message_components import Image, Plain
 from astrbot.api import logger
 
 # MessageChain 在不同 AstrBot 版本里的导出位置不同，逐个尝试
@@ -110,6 +110,37 @@ def _strip_markup(text: str) -> str:
     t = re.sub(r"<[^>]+>", "", t)                            # HTML 标签
     t = t.replace("'''", "").replace("''", "")               # 粗斜体
     return t.strip()
+
+
+def _strip_md(text: str) -> str:
+    """把 Markdown 语法转成 QQ 里可直接显示的纯文本。
+
+    模型回复经常带 **加粗**、# 标题、- 列表、| 表格 | 等语法，
+    QQ 不渲染就会原样显示符号，这里统一在发送前清洗掉。"""
+    if not text:
+        return text
+    out_lines = []
+    for line in text.split("\n"):
+        t = line.rstrip()
+        # 表格：| a | b | -> a　b；| --- | 分隔行直接丢弃
+        if t.lstrip().startswith("|"):
+            cells = [c.strip() for c in t.strip().strip("|").split("|")]
+            if all(re.fullmatch(r":?-+:?", c or "-") for c in cells):
+                continue
+            cells = [c.replace("**", "").replace("__", "").replace("~~", "").replace("`", "")
+                     for c in cells]
+            out_lines.append("　".join(cells))
+            continue
+        # 水平线整行丢弃
+        if re.fullmatch(r"\s*(-{3,}|\*{3,}|_{3,})\s*", t):
+            continue
+        t = re.sub(r"^\s{0,3}#{1,6}\s*", "", t)      # 标题
+        t = re.sub(r"^(\s*)[-*+]\s+", r"\1· ", t)    # 无序列表 -> ·
+        t = re.sub(r"^\s*>\s?", "", t)               # 引用
+        # 行内格式符号
+        t = t.replace("**", "").replace("__", "").replace("~~", "").replace("`", "")
+        out_lines.append(t)
+    return "\n".join(out_lines)
 
 
 class DustloopClient:
@@ -253,16 +284,32 @@ class DustloopClient:
         return await asyncio.to_thread(_process)
 
 
-@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.2")
+@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.3")
 class DustloopGBVSR(Star):
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
         self.client = DustloopClient()
         # 是否压缩判定框图片（见 _conf_schema.json），默认开启
         self.compress_images = bool((config or {}).get("compress_images", True))
+        # 是否在发送前把模型回复里的 Markdown 语法清洗成纯文本，默认开启
+        self.strip_markdown = bool((config or {}).get("strip_markdown", True))
 
     async def terminate(self):
         await self.client.close()
+
+    # ---------- 发送前处理 ----------
+
+    @filter.on_decorating_result()
+    async def on_decorating_result(self, event: AstrMessageEvent):
+        """配置开启时，把待发文本里的 Markdown 语法转成纯文本（QQ 不渲染）。"""
+        if not self.strip_markdown:
+            return
+        result = event.get_result()
+        if not result or not getattr(result, "chain", None):
+            return
+        for comp in result.chain:
+            if isinstance(comp, Plain):
+                comp.text = _strip_md(comp.text)
 
     # ---------- 指令 ----------
 
