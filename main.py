@@ -89,16 +89,43 @@ CHAR_ALIASES = {
     "伊尔莎": "Ilsa", "威尔纳斯": "Wilnas", "火龙": "Wilnas",
     "梅格": "Meg", "加列翁": "Galleon", "土龙": "Galleon",
     "伊德": "Id",
+    # 社区俗称（第二批）
+    "乌诺": "Anre", "一爷": "Anre", "小老头": "Anre",
+    "古兰": "Gran", "ex古兰": "Gran (EX)", "古兰ex": "Gran (EX)",
+    "狐狸": "Yuel", "老头": "Soriz", "老六": "Seox", "six": "Seox",
+    "大姐": "Metera", "贝熊": "Beatrix", "鼠鼠": "Vikala",
+    "鲨鱼": "Meg", "教官": "Ilsa", "薇拉": "Vira", "电狼": "Eustace",
+    "三傻": "Lowain", "炎帝": "Percival",
+    "维萨西娅": "Versusia", "龙妈": "Versusia",
+    "a贝": "Avatar Belial", "老贝": "Belial",
 }
 
 
 def _fix_buttons(s: str) -> str:
-    """常见拳脚输入写法归一化：5l -> 5L、236h -> 236H，其余字符（如 j. c.）保持不变。"""
+    """常见拳脚输入写法归一化：
+    - l/m/h/u 统一大写：5l -> 5L、236h -> 236H
+    - a/b/c/d -> L/M/H/U（仅限数字后，如 26a -> 26L；不误伤 c.L / f.L / j.L 前缀）
+    - 方向简写：26 -> 236、24 -> 214（如 26a -> 236L、2626h -> 236236H）
+    其余字符（如 j. c.）保持不变。
+    """
     s = s.strip().replace("．", ".").replace(" ", "")
+    abcd = {"a": "L", "b": "M", "c": "H", "d": "U"}
+    s = re.sub(r"(?<=\d)[abcdABCD]", lambda m: abcd[m.group(0).lower()], s)
     out = []
     for ch in s:
         out.append(ch.upper() if ch.lower() in "lmhu" and ch.isalpha() else ch)
-    return "".join(out)
+    s = "".join(out)
+
+    # 展开方向简写：仅当整段数字串全由 26/24 组成时才展开，
+    # 避免误伤 236、214、22、623 等已有写法
+    def _expand(m: re.Match) -> str:
+        run = m.group(0)
+        if len(run) % 2 == 0 and all(run[i:i + 2] in ("26", "24")
+                                    for i in range(0, len(run), 2)):
+            return run.replace("26", "236").replace("24", "214")
+        return run
+
+    return re.sub(r"\d+", _expand, s)
 
 
 def _strip_markup(text: str) -> str:
