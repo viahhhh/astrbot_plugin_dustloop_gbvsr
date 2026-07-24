@@ -1,0 +1,8 @@
+{
+  "compress_images": {
+    "description": "压缩判定框图片",
+    "type": "bool",
+    "default": true,
+    "hint": "开启：下载图片后压缩为最长边 480px 的 JPEG（手机 QQ 对大分辨率透明 PNG 支持差，压缩后加载更稳）；关闭：直接发送 wiki 原图直链，不经过本地下载压缩"
+  }
+}
