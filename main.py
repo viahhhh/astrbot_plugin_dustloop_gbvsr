@@ -20,6 +20,7 @@ import re
 import time
 import asyncio
 import io
+import difflib
 
 from pathlib import Path
 
@@ -355,6 +356,8 @@ class DustloopGBVSR(Star):
         self.compress_images = bool((config or {}).get("compress_images", True))
         # 是否在发送前把模型回复里的 Markdown 语法清洗成纯文本，默认开启
         self.strip_markdown = bool((config or {}).get("strip_markdown", True))
+        # 是否对角色名做模糊匹配（拼错自动纠正 + 失败时给候选名），默认开启
+        self.fuzzy_match = bool((config or {}).get("fuzzy_match", True))
 
     async def terminate(self):
         await self.client.close()
@@ -499,10 +502,28 @@ class DustloopGBVSR(Star):
         except Exception as e:
             return f"查询失败：{e}"
         if not chara:
-            return (
-                f"没找到角色「{character}」。已知角色包括：Gran(格兰)、Djeeta(姬塔)、"
-                "Katalina(卡塔莉娜)、Narmaya(娜露梅/奶刀) 等，可让用户发 /角色列表 查看完整名单。"
-            )
+            if not self.fuzzy_match:
+                return (f"没找到角色「{character}」。"
+                        "可让用户发 /角色列表 查看完整名单，用正确的角色名重试。")
+            # 给出最接近的候选名，让模型可以直接拿着重试，
+            # 而不是让用户去翻 /角色列表
+            try:
+                roster = await self.client.roster()
+            except Exception:
+                roster = []
+            canonical = {c.lower(): c for c in roster}
+            pool = list(CHAR_ALIASES) + list(canonical)
+            close = difflib.get_close_matches(
+                character.strip().lower(), pool, n=3, cutoff=0.4)
+            seen, names = set(), []
+            for s in close:
+                name = CHAR_ALIASES.get(s) or canonical.get(s, s)
+                if name not in seen:
+                    seen.add(name)
+                    names.append(name)
+            hint = (f"你是不是想找：{'、'.join(names)}？"
+                    if names else "可让用户发 /角色列表 查看完整名单。")
+            return f"没找到角色「{character}」。{hint}请用正确的角色名重试。"
 
         try:
             rows = await self.client.moves(chara)
@@ -574,6 +595,20 @@ class DustloopGBVSR(Star):
         for c in roster:  # 前缀/包含匹配
             if key in c.lower():
                 return c
+        # 模糊匹配兜底：模型有时会凭印象拼错名字（如 narmya、grna），
+        # 用 difflib 在别名表和正式名单里找最接近的纠正回来。
+        # cutoff 定 0.75：拼写错误的相似度一般 >0.8，
+        # 而"别的作品的角色"（sol→seox 0.57、mika→vikala 0.60）不会被误纠正，
+        # 那些情况交给上方 None 分支返回候选名让模型重试。
+        # 可在插件配置里关掉（fuzzy_match），关闭后直接返回 None
+        if not self.fuzzy_match:
+            return None
+        canonical = {c.lower(): c for c in roster}
+        pool = list(CHAR_ALIASES) + list(canonical)
+        close = difflib.get_close_matches(key, pool, n=1, cutoff=0.75)
+        if close:
+            hit = close[0]
+            return CHAR_ALIASES.get(hit) or canonical.get(hit)
         return None
 
     def _match_moves(self, rows: list[dict], query: str) -> list[dict]:
