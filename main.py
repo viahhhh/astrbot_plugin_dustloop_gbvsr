@@ -347,7 +347,7 @@ class DustloopClient:
         return await asyncio.to_thread(_process)
 
 
-@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.4")
+@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.5")
 class DustloopGBVSR(Star):
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
