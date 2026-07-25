@@ -44,6 +44,9 @@ except ImportError:
 API = "https://www.dustloop.com/wiki/api.php"
 UA = {"User-Agent": "AstrBot-DustloopGBVSR-Plugin/1.2 (https://www.dustloop.com)"}
 CACHE_TTL = 3600  # 秒
+# 判定框图最长边像素：开启压缩时，既作为向 MediaWiki 请求服务端缩略图的宽度
+# （只下载小图），也作为本地 JPEG 压缩的尺寸上限
+IMAGE_WIDTH = 720
 
 # 角色别名表：键为小写别名，值为 wiki 上的 chara 名
 CHAR_ALIASES = {
@@ -275,8 +278,13 @@ class DustloopClient:
         self._move_cache[chara] = (now, rows)
         return rows
 
-    async def image_urls(self, filenames: list[str]) -> list[str]:
-        """把 File:xxx.png 批量解析为直链。不存在的文件会被自动过滤。"""
+    async def image_urls(self, filenames: list[str],
+                         thumb_width: int | None = None) -> list[str]:
+        """把 File:xxx.png 批量解析为直链。不存在的文件会被自动过滤。
+
+        thumb_width 不为 None 时，通过 MediaWiki 的 iiurlwidth 让服务端
+        生成缩略图，返回 thumburl（下载量远小于原图）；原图比该宽度还小时
+        接口不返回 thumburl，此时回退为原图 url。"""
         if not filenames:
             return []
         titles = "|".join(f"File:{f}" for f in filenames)
@@ -285,6 +293,8 @@ class DustloopClient:
             "action": "query", "titles": titles,
             "prop": "imageinfo", "iiprop": "url", "format": "json",
         }
+        if thumb_width:
+            params["iiurlwidth"] = thumb_width
         async with s.get(API, params=params) as r:
             r.raise_for_status()
             data = await r.json()
@@ -292,15 +302,18 @@ class DustloopClient:
         for page in data.get("query", {}).get("pages", {}).values():
             info = page.get("imageinfo")
             if info:
-                urls.append(info[0]["url"])
+                urls.append(info[0].get("thumburl", info[0]["url"])
+                            if thumb_width else info[0]["url"])
         return urls
 
-    async def hitbox_urls(self, row: dict) -> list[str]:
+    async def hitbox_urls(self, row: dict,
+                          thumb_width: int | None = None) -> list[str]:
         """取某招式的判定框图片直链。优先用 hitboxes 字段；字段为空时，
-        按 wiki 判定框图的命名规律从普通图名推导候选并探测真实存在的文件。"""
+        按 wiki 判定框图的命名规律从普通图名推导候选并探测真实存在的文件。
+        thumb_width 不为 None 时返回服务端缩略图链接（见 image_urls）。"""
         files = [f for f in row.get("hitboxes", "").split("\\") if f.strip()]
         if files:
-            return await self.image_urls(files[:6])
+            return await self.image_urls(files[:6], thumb_width)
         bases = []
         for f in row.get("images", "").split("\\"):
             f = f.strip()
@@ -316,16 +329,17 @@ class DustloopClient:
             candidates.extend(b + s + ".png" for s in suffixes)
         if not candidates:
             return []
-        return await self.image_urls(candidates)
+        return await self.image_urls(candidates, thumb_width)
 
     async def compress_hitbox_image(
-        self, url: str, max_edge: int = 480, quality: int = 70
+        self, url: str, max_edge: int = IMAGE_WIDTH, quality: int = 70
     ) -> bytes:
         """下载判定框图片并压缩为 JPEG，返回编码后的字节。
 
-        手机 QQ 对大分辨率透明 PNG 加载很差，经常只显示占位符。这里把最长边
-        限制到 480px，并转存为 JPEG（透明部分填充白色），单图控制在 20 KB
-        左右，适合 QQ 机器人发送。失败时抛出异常。"""
+        手机 QQ 对大分辨率透明 PNG 加载很差，经常只显示占位符。开启压缩时
+        传入的 url 已是 MediaWiki 服务端缩略图（见 image_urls 的
+        thumb_width），下载量小；这里再把最长边限制到 max_edge，并转存为
+        JPEG（透明部分填充白色），适合 QQ 机器人发送。失败时抛出异常。"""
         s = await self.session()
         async with s.get(url) as r:
             r.raise_for_status()
@@ -356,7 +370,7 @@ class DustloopClient:
         return await asyncio.to_thread(_process)
 
 
-@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.7")
+@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.8")
 class DustloopGBVSR(Star):
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
@@ -462,9 +476,12 @@ class DustloopGBVSR(Star):
 
         # 4. 输出（最多 3 条，避免刷屏）
         # 只发攻击框/受击框图（hitboxes 字段，空则按命名规律推导探测）；真没有的不发图
-        # 各行的图片链接解析互不依赖，先并发预取，避免逐行串行等待
+        # 各行的图片链接解析互不依赖，先并发预取，避免逐行串行等待；
+        # 开启压缩时直接请求服务端缩略图，减少下载量
         url_results = await asyncio.gather(
-            *(self.client.hitbox_urls(row) for row in matched[:3]),
+            *(self.client.hitbox_urls(
+                row, thumb_width=IMAGE_WIDTH if self.compress_images else None)
+              for row in matched[:3]),
             return_exceptions=True,
         )
         for row, res in zip(matched[:3], url_results):
@@ -476,7 +493,7 @@ class DustloopGBVSR(Star):
                 yield event.plain_result("（该招式 wiki 上没有判定框图片）")
             else:
                 # 手机 QQ 对大分辨率透明 PNG 支持差，只发第 1 张；
-                # 配置开启压缩时压到 480px JPEG，关闭时直接发原图直链
+                # 配置开启压缩时压到 720px JPEG，关闭时直接发原图直链
                 components = await self._build_image_components(res[:1])
                 yield event.chain_result(components)
             if len(matched) > 1:
@@ -548,9 +565,12 @@ class DustloopGBVSR(Star):
             texts.append(f"（共匹配 {len(matched)} 条，只列出前 3 条）")
 
         # 判定框图片作为附加消息直接发到会话里（工具返回值只能是文本）
-        # 各行的 hitboxes 解析互不依赖，并发请求避免逐个等待
+        # 各行的 hitboxes 解析互不依赖，并发请求避免逐个等待；
+        # 开启压缩时直接请求服务端缩略图，减少下载量
         url_results = await asyncio.gather(
-            *(self.client.hitbox_urls(r) for r in matched[:3]),
+            *(self.client.hitbox_urls(
+                r, thumb_width=IMAGE_WIDTH if self.compress_images else None)
+              for r in matched[:3]),
             return_exceptions=True,
         )
         imgs: list[str] = []
