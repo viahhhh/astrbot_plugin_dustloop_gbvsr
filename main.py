@@ -347,7 +347,7 @@ class DustloopClient:
         return await asyncio.to_thread(_process)
 
 
-@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.5")
+@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.6")
 class DustloopGBVSR(Star):
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
@@ -495,7 +495,7 @@ class DustloopGBVSR(Star):
 
         Args:
             character(string): 角色名。直接原样传入用户说的名字（包括中文俗称/别称），不要自行翻译成英文名或根据印象猜测——插件内置完整的别名表，俗称会由插件负责解析。支持英文名（如 Gran、Narmaya）或中文名/俗称（如 格兰、姬塔、奶刀、龙妈、炎帝）
-            move(string): 招式的指令输入或英文名，如 5L、2H、c.M、j.H、236L、623H、236236U、Catastrophe；大小写不敏感。当用户想列出该角色的全部招式时传空字符串 ""。
+            move(string): 招式的指令输入或英文名，如 5L、2H、c.M、j.H、236L、623H、236236U、Catastrophe；大小写不敏感。直接原样传入用户写的指令，不要自行换算——插件支持方向简写（26=236、24=214，如 26a 即 236L、2424d 即 214214U）和 abcd 按键简写（a/b/c/d = L/M/H/U），会自行归一化。当用户想列出该角色的全部招式时传空字符串 ""。
         """
         try:
             chara = await self._resolve_char(character)
