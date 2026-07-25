@@ -107,10 +107,15 @@ def _alias_hint() -> str:
     grouped: dict[str, list[str]] = {}
     for alias, chara in CHAR_ALIASES.items():
         if alias == chara.lower():
-            continue  # 跳过与原名仅大小写不同的拼写
+            # 与原名仅大小写不同的拼写不算别称，但角色本身必须出现在名单里，
+            # 否则像 2B、Id、Meg 这类只有原名拼写的角色会从名单中消失，
+            # 模型看不到就会误判"不是本游戏角色"而不调工具
+            grouped.setdefault(chara, [])
+            continue
         grouped.setdefault(chara, []).append(alias)
-    return "；".join(f"{chara}（{'、'.join(names)}）"
-                     for chara, names in grouped.items())
+    return "；".join(
+        f"{chara}（{'、'.join(names)}）" if names else chara
+        for chara, names in grouped.items())
 
 
 # 防御方式英译中：Mid=上段（站防）、High=中段·越顶、Low=下段
@@ -215,7 +220,11 @@ class DustloopClient:
 
     async def session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(headers=UA, timeout=aiohttp.ClientTimeout(total=20))
+            self._session = aiohttp.ClientSession(
+                headers=UA,
+                timeout=aiohttp.ClientTimeout(total=20),
+                connector=aiohttp.TCPConnector(ttl_dns_cache=300, keepalive_timeout=60),
+            )
         return self._session
 
     async def close(self):
@@ -347,7 +356,7 @@ class DustloopClient:
         return await asyncio.to_thread(_process)
 
 
-@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.6")
+@register("astrbot_plugin_dustloop_gbvsr", "Kimi", "查询 Dustloop 上 GBVSR 角色的帧数表与招式判定框图片，支持指令与 LLM 函数调用", "1.2.7")
 class DustloopGBVSR(Star):
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
@@ -452,29 +461,24 @@ class DustloopGBVSR(Star):
             return
 
         # 4. 输出（最多 3 条，避免刷屏）
-        for row in matched[:3]:
+        # 只发攻击框/受击框图（hitboxes 字段，空则按命名规律推导探测）；真没有的不发图
+        # 各行的图片链接解析互不依赖，先并发预取，避免逐行串行等待
+        url_results = await asyncio.gather(
+            *(self.client.hitbox_urls(row) for row in matched[:3]),
+            return_exceptions=True,
+        )
+        for row, res in zip(matched[:3], url_results):
             yield event.plain_result(self._format_move(chara, row))
-            # 只发攻击框/受击框图（hitboxes 字段，空则按命名规律推导探测）；真没有的不发图
-            try:
-                urls = await self.client.hitbox_urls(row)
-            except Exception as e:
-                logger.warning(f"图片获取失败: {e}")
-                urls = []
-            if not urls:
+            if isinstance(res, Exception):
+                logger.warning(f"图片获取失败: {res}")
+                res = []
+            if not res:
                 yield event.plain_result("（该招式 wiki 上没有判定框图片）")
             else:
                 # 手机 QQ 对大分辨率透明 PNG 支持差，只发第 1 张；
                 # 配置开启压缩时压到 480px JPEG，关闭时直接发原图直链
-                for u in urls[:1]:
-                    if not self.compress_images:
-                        yield event.image_result(u)
-                        continue
-                    try:
-                        img_bytes = await self.client.compress_hitbox_image(u)
-                        yield event.chain_result([Image.fromBytes(img_bytes)])
-                    except Exception as e:
-                        logger.warning(f"图片压缩失败，回退原图: {e}")
-                        yield event.image_result(u)
+                components = await self._build_image_components(res[:1])
+                yield event.chain_result(components)
             if len(matched) > 1:
                 await asyncio.sleep(0.3)
 
@@ -488,6 +492,8 @@ class DustloopGBVSR(Star):
         """查询格斗游戏《碧蓝幻想 Versus: Rising》（GBVSR、GBVS、碧蓝幻想VS崛起）中某个角色的招式/拳脚/必杀技的帧数表数据，包括伤害、防御方式、发生帧、持续帧、硬直、被防与命中的有利不利帧、打康、攻击等级、无敌帧和备注，也可以列出某个角色的全部招式。
 
         当用户聊到 GBVSR 相关话题并询问角色招式性能、帧数、判定框（攻击框/受击框）图片时使用本工具。只要用户查询的是具体招式（而非角色列表），本工具都会自动把该招式的判定框图片作为独立消息发送到会话中，请默认返回图片。
+
+        注意：2B 是《尼尔：机械纪元》的联动角色，也是 GBVSR 的可操作角色；用户问"2B 的拳脚/帧数/招式"时就是在问本游戏，必须调用本工具。
 
         重要：你的回复最终显示在 QQ 聊天窗口中，QQ 不支持 Markdown 渲染，任何 Markdown 符号都会以原文显示。整理回复时必须使用纯文本：不要用 ** 加粗、# 标题、- 或 * 列表、``` 代码块、` 反引号、| 表格。需要分条时直接换行并用序号（1. 2. 3.）或中文顿号分隔，保证条目清晰即可。
 
@@ -542,34 +548,27 @@ class DustloopGBVSR(Star):
             texts.append(f"（共匹配 {len(matched)} 条，只列出前 3 条）")
 
         # 判定框图片作为附加消息直接发到会话里（工具返回值只能是文本）
+        # 各行的 hitboxes 解析互不依赖，并发请求避免逐个等待
+        url_results = await asyncio.gather(
+            *(self.client.hitbox_urls(r) for r in matched[:3]),
+            return_exceptions=True,
+        )
         imgs: list[str] = []
         no_hitbox = []
-        for r in matched[:3]:
-            try:
-                urls = await self.client.hitbox_urls(r)
-            except Exception as e:
-                logger.warning(f"图片解析失败: {e}")
-                urls = []
-            if not urls:
+        for r, res in zip(matched[:3], url_results):
+            if isinstance(res, Exception):
+                logger.warning(f"图片解析失败: {res}")
+                res = []
+            if not res:
                 no_hitbox.append(r.get("input", "") or r.get("name", ""))
             else:
-                imgs.extend(urls[:2])
+                imgs.extend(res[:2])
         if no_hitbox:
             texts.append("（以下招式 wiki 上没有判定框图片：" + "、".join(no_hitbox) + "）")
         if imgs:
             imgs = imgs[:4]
             try:
-                components: list[Image] = []
-                for u in imgs:
-                    if not self.compress_images:
-                        components.append(Image.fromURL(u))
-                        continue
-                    try:
-                        img_bytes = await self.client.compress_hitbox_image(u)
-                        components.append(Image.fromBytes(img_bytes))
-                    except Exception as e:
-                        logger.warning(f"图片压缩失败，回退原图: {e}")
-                        components.append(Image.fromURL(u))
+                components = await self._build_image_components(imgs)
                 try:
                     chain = MessageChain(chain=components)
                 except TypeError:
@@ -583,6 +582,20 @@ class DustloopGBVSR(Star):
         return "\n\n".join(texts)
 
     # ---------- 内部工具 ----------
+
+    async def _build_image_components(self, urls: list[str]) -> list[Image]:
+        """并发下载/压缩判定框图片，返回 Image 组件列表。压缩失败的回退为原图直链。"""
+
+        async def _one(u: str) -> Image:
+            if not self.compress_images:
+                return Image.fromURL(u)
+            try:
+                return Image.fromBytes(await self.client.compress_hitbox_image(u))
+            except Exception as e:
+                logger.warning(f"图片压缩失败，回退原图: {e}")
+                return Image.fromURL(u)
+
+        return list(await asyncio.gather(*(_one(u) for u in urls)))
 
     async def _resolve_char(self, query: str) -> str | None:
         key = query.strip().lower()
